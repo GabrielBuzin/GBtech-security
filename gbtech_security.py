@@ -36,7 +36,6 @@ DB_PATH = DATA_DIR / "security.db"
 LOG_PATH = DATA_DIR / "gbtech-security.log"
 SCAN_INTERVAL_SECONDS = 8
 SUSPICIOUS_EXTENSIONS = {".exe", ".msi", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".scr", ".com", ".jar", ".hta", ".lnk", ".reg"}
-ARCHIVE_EXTENSIONS = {".zip", ".rar", ".7z", ".iso", ".img"}
 DECOY_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".jpg", ".jpeg", ".png", ".txt"}
 
 
@@ -179,8 +178,6 @@ class Monitor(threading.Thread):
                 return "Arquivo tem formato executável, mas usa uma extensão de documento ou imagem"
         except OSError:
             return None
-        if last in ARCHIVE_EXTENSIONS:
-            return f"Arquivo compactado para revisão ({last})"
         return None
 
     def isolate(self, path: Path, reason: str) -> None:
@@ -471,10 +468,10 @@ class App(tk.Tk):
             if not password:
                 raise RuntimeError("A senha de aplicativo do Gmail não está configurada")
             message = EmailMessage()
-            message["Subject"] = f"GBTech Security: arquivo isolado — {name}"
+            message["Subject"] = "GBTech Security: alerta de segurança"
             message["From"] = sender
             message["To"] = recipient
-            message.set_content(f"O GBTech Security isolou o arquivo '{name}'.\n\nMotivo: {detail}\n\nRevise o item na tela de Quarentena.")
+            message.set_content("O GBTech Security identificou e conteve uma possível ameaça. Abra o aplicativo para revisar o alerta.")
             with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context(), timeout=20) as server:
                 server.login(sender, password)
                 server.send_message(message)
