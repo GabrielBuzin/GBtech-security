@@ -305,7 +305,7 @@ class App(tk.Tk):
         ttk.Label(section_header, text="Quarentena", style="Title.TLabel", font=("Segoe UI", 15, "bold")).pack(side="left")
         ttk.Label(section_header, text="Itens isolados aguardando sua decisão", style="Subtitle.TLabel").pack(side="left", padx=12)
         columns = ("name", "reason", "date")
-        self.tree = ttk.Treeview(section, columns=columns, show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(section, columns=columns, show="headings", selectmode="extended")
         self.tree.heading("name", text="Arquivo")
         self.tree.heading("reason", text="Motivo")
         self.tree.heading("date", text="Isolado em")
@@ -315,8 +315,10 @@ class App(tk.Tk):
         self.tree.pack(fill="both", expand=True)
         actions = ttk.Frame(quarantine, style="Main.TFrame")
         actions.pack(fill="x", pady=(12, 0))
-        ttk.Button(actions, text="Restaurar selecionado", style="Quiet.TButton", command=self.restore_selected).pack(side="left")
-        ttk.Button(actions, text="Excluir selecionado", style="Quiet.TButton", command=self.delete_selected).pack(side="left", padx=8)
+        self.select_all_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(actions, text="Selecionar todos", variable=self.select_all_var, command=self.toggle_select_all).pack(side="left", padx=(0, 12))
+        ttk.Button(actions, text="Restaurar selecionados", style="Quiet.TButton", command=self.restore_selected).pack(side="left")
+        ttk.Button(actions, text="Excluir selecionados", style="Quiet.TButton", command=self.delete_selected).pack(side="left", padx=8)
         ttk.Button(actions, text="Gerenciar pastas", style="Quiet.TButton", command=self.manage_folders).pack(side="right")
         ttk.Button(actions, text="Contas", style="Quiet.TButton", command=self.manage_accounts).pack(side="right", padx=8)
         ttk.Button(actions, text="Minimizar", style="Quiet.TButton", command=self.minimize_to_background).pack(side="right", padx=8)
@@ -434,6 +436,7 @@ class App(tk.Tk):
         for item in items:
             self.tree.insert("", "end", iid=str(item[0]), values=(item[1], item[2], item[3]))
         self.quarantine_count.configure(text=f"{len(items)} item" + ("" if len(items) == 1 else "s"))
+        self.select_all_var.set(False)
         self.refresh_activity()
         self.refresh_protection()
 
@@ -467,43 +470,59 @@ class App(tk.Tk):
             self.monitor.seen.clear()
 
     def selected_item(self) -> tuple | None:
+        items = self.selected_items()
+        return items[0] if items else None
+
+    def selected_items(self) -> list[tuple]:
         selected = self.tree.selection()
         if not selected:
             messagebox.showinfo(APP_NAME, "Selecione um item da quarentena primeiro.")
-            return None
-        item_id = int(selected[0])
-        return next((item for item in self.store.items() if item[0] == item_id), None)
+            return []
+        indexed = {item[0]: item for item in self.store.items()}
+        return [indexed[int(item_id)] for item_id in selected if int(item_id) in indexed]
+
+    def toggle_select_all(self) -> None:
+        rows = self.tree.get_children()
+        if self.select_all_var.get():
+            self.tree.selection_set(rows)
+        else:
+            self.tree.selection_remove(rows)
 
     def restore_selected(self) -> None:
-        item = self.selected_item()
-        if not item:
+        items = self.selected_items()
+        if not items:
             return
-        if not messagebox.askyesno(APP_NAME, "Restaurar este arquivo pode permitir sua execução. Deseja continuar?"):
+        if not messagebox.askyesno(APP_NAME, f"Restaurar {len(items)} item(ns) pode permitir a execução de arquivos. Deseja continuar?"):
             return
-        original = Path(item[4])
-        source = QUARANTINE_DIR / item[6]
-        try:
-            original.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(source), str(original))
-            self.store.remove(item[0])
-            self.store.log_activity("Arquivo restaurado", item[1], "O arquivo foi devolvido à pasta original")
-            self.refresh()
-            self.summary.configure(text=f"{item[1]} foi restaurado para a pasta original.")
-        except OSError as error:
-            messagebox.showerror(APP_NAME, f"Não foi possível restaurar o arquivo.\n{error}")
+        restored = 0
+        for item in items:
+            try:
+                original = Path(item[4])
+                original.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(QUARANTINE_DIR / item[6]), str(original))
+                self.store.remove(item[0])
+                self.store.log_activity("Arquivo restaurado", item[1], "O arquivo foi devolvido à pasta original")
+                restored += 1
+            except OSError as error:
+                logging.exception("Não foi possível restaurar %s: %s", item[1], error)
+        self.refresh()
+        self.summary.configure(text=f"{restored} item(ns) restaurado(s) para a pasta original.")
 
     def delete_selected(self) -> None:
-        item = self.selected_item()
-        if not item or not messagebox.askyesno(APP_NAME, "Excluir este arquivo da quarentena permanentemente?"):
+        items = self.selected_items()
+        if not items or not messagebox.askyesno(APP_NAME, f"Excluir {len(items)} item(ns) da quarentena permanentemente?"):
             return
-        try:
-            (QUARANTINE_DIR / item[6]).unlink(missing_ok=True)
-            self.store.remove(item[0])
-            self.store.log_activity("Arquivo excluído", item[1], "O item foi excluído permanentemente da quarentena")
-            self.refresh()
-            self.summary.configure(text=f"{item[1]} foi excluído da quarentena.")
-        except OSError as error:
-            messagebox.showerror(APP_NAME, f"Não foi possível excluir o arquivo.\n{error}")
+        deleted = 0
+        for item in items:
+            try:
+                (QUARANTINE_DIR / item[6]).unlink(missing_ok=True)
+                self.store.remove(item[0])
+                self.store.log_activity("Arquivo excluído", item[1], "O item foi excluído permanentemente da quarentena")
+                deleted += 1
+            except OSError as error:
+                logging.exception("Não foi possível excluir %s: %s", item[1], error)
+        self.refresh()
+        self.summary.configure(text=f"{deleted} item(ns) excluído(s) da quarentena.")
 
     def manage_folders(self) -> None:
         dialog = tk.Toplevel(self)
