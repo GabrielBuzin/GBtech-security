@@ -26,8 +26,9 @@ DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "GBTechSecurity"
 QUARANTINE_DIR = DATA_DIR / "quarantine"
 DB_PATH = DATA_DIR / "security.db"
 SCAN_INTERVAL_SECONDS = 8
-SUSPICIOUS_EXTENSIONS = {".exe", ".msi", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".scr", ".com", ".jar"}
-ARCHIVE_EXTENSIONS = {".zip", ".rar", ".7z", ".iso"}
+SUSPICIOUS_EXTENSIONS = {".exe", ".msi", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".scr", ".com", ".jar", ".hta", ".lnk", ".reg"}
+ARCHIVE_EXTENSIONS = {".zip", ".rar", ".7z", ".iso", ".img"}
+DECOY_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".jpg", ".jpeg", ".png", ".txt"}
 
 
 def now() -> str:
@@ -119,10 +120,21 @@ class Monitor(threading.Thread):
     def reason_for(path: Path) -> str | None:
         suffixes = [part.lower() for part in path.suffixes]
         last = path.suffix.lower()
-        if last in SUSPICIOUS_EXTENSIONS:
-            return f"Arquivo executável ou script ({last}) detectado em pasta monitorada"
         if len(suffixes) >= 2 and suffixes[-1] in SUSPICIOUS_EXTENSIONS:
             return "Extensão dupla que pode ocultar um arquivo executável"
+        if last in SUSPICIOUS_EXTENSIONS:
+            return f"Arquivo executável ou script ({last}) detectado em pasta monitorada"
+        if "\u202e" in path.name:
+            return "Nome de arquivo usa um caractere que pode ocultar a extensão real"
+        if path.name.startswith("."):
+            return "Arquivo oculto criado em uma pasta monitorada"
+        try:
+            with path.open("rb") as file:
+                header = file.read(4)
+            if header[:2] == b"MZ" and last in DECOY_EXTENSIONS:
+                return "Arquivo tem formato executável, mas usa uma extensão de documento ou imagem"
+        except OSError:
+            return None
         if last in ARCHIVE_EXTENSIONS:
             return f"Arquivo compactado para revisão ({last})"
         return None
@@ -261,12 +273,32 @@ class App(tk.Tk):
                 kind, name, detail = self.events.get_nowait()
                 if kind == "quarantined":
                     self.summary.configure(text=f"{name} foi isolado para revisão: {detail}")
+                    self.show_alert(name, detail)
                     self.refresh()
                 elif kind == "error":
                     self.summary.configure(text=detail)
         except queue.Empty:
             pass
         self.after(500, self.process_events)
+
+    def show_alert(self, name: str, detail: str) -> None:
+        """A non-blocking desktop alert, useful even while the main window is minimized."""
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except (ImportError, RuntimeError):
+            pass
+        toast = tk.Toplevel(self)
+        toast.title(APP_NAME)
+        toast.configure(bg="#182230")
+        toast.attributes("-topmost", True)
+        toast.resizable(False, False)
+        tk.Label(toast, text="GBTech Security", bg="#182230", fg="#6ce9a6", font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=18, pady=(14, 2))
+        tk.Label(toast, text="Arquivo isolado para revisão", bg="#182230", fg="white", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=18)
+        tk.Label(toast, text=f"{name}\n{detail}", bg="#182230", fg="#d0d5dd", justify="left", wraplength=350, font=("Segoe UI", 9)).pack(anchor="w", padx=18, pady=(5, 12))
+        ttk.Button(toast, text="Abrir quarentena", command=lambda: (toast.destroy(), self.deiconify(), self.lift())).pack(anchor="e", padx=18, pady=(0, 14))
+        toast.geometry("410x175+900+650")
+        toast.after(12000, lambda: toast.winfo_exists() and toast.destroy())
 
     def refresh(self) -> None:
         for row in self.tree.get_children():
