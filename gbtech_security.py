@@ -12,16 +12,20 @@ import logging
 import os
 import queue
 import shutil
+import smtplib
 import sqlite3
+import ssl
 import sys
 import threading
 import time
 import tkinter as tk
 from datetime import datetime
+from email.message import EmailMessage
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import pystray
+import keyring
 from PIL import Image
 
 
@@ -92,6 +96,14 @@ class Storage:
         self.connection.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('watched_paths', ?)", (json.dumps(paths),))
         self.connection.commit()
 
+    def setting(self, key: str, default: str = "") -> str:
+        row = self.connection.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row[0] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        self.connection.execute("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)", (key, value))
+        self.connection.commit()
+
     def add_quarantine(self, stored_name: str, original_path: str, display_name: str, reason: str, digest: str) -> None:
         self.connection.execute(
             "INSERT INTO quarantine(stored_name, original_path, display_name, reason, digest, quarantined_at) VALUES(?,?,?,?,?,?)",
@@ -128,6 +140,13 @@ class Storage:
         return self.connection.execute(
             "SELECT action, file_name, details, happened_at FROM activity ORDER BY id DESC LIMIT 250"
         ).fetchall()
+
+    def gmail_config(self) -> tuple[str, str]:
+        return self.setting("gmail_sender"), self.setting("gmail_recipient")
+
+    def set_gmail_config(self, sender: str, recipient: str) -> None:
+        self.set_setting("gmail_sender", sender)
+        self.set_setting("gmail_recipient", recipient)
 
 
 class Monitor(threading.Thread):
@@ -353,6 +372,11 @@ class App(tk.Tk):
         privacy.pack(fill="x", pady=14)
         ttk.Label(privacy, text="Privacidade", style="Text.TLabel", font=("Segoe UI", 12, "bold")).pack(anchor="w")
         ttk.Label(privacy, text="Arquivos, hashes e registros permanecem neste computador. Consultas online só serão ativadas se você configurar um serviço externo.", style="Text.TLabel", wraplength=820).pack(anchor="w", pady=(5, 0))
+        email_alerts = ttk.Frame(settings, style="Panel.TFrame", padding=20)
+        email_alerts.pack(fill="x")
+        ttk.Label(email_alerts, text="Alertas por Gmail", style="Text.TLabel", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(email_alerts, text="Envie um e-mail quando um arquivo for isolado. A senha de aplicativo fica somente no cofre de credenciais do Windows.", style="Text.TLabel", wraplength=820).pack(anchor="w", pady=(5, 14))
+        ttk.Button(email_alerts, text="Configurar Gmail", style="Accent.TButton", command=self.configure_gmail).pack(anchor="w")
         self.refresh()
 
     def card(self, parent: ttk.Frame, title: str, value: str, description: str, column: int) -> None:
@@ -397,6 +421,7 @@ class App(tk.Tk):
                 if kind == "quarantined":
                     self.summary.configure(text=f"{name} foi isolado para revisão: {detail}")
                     self.show_alert(name, detail)
+                    self.send_email_alert_async(name, detail)
                     self.refresh()
                 elif kind == "error":
                     self.summary.configure(text=detail)
@@ -406,6 +431,12 @@ class App(tk.Tk):
                     self.focus_force()
                 elif kind == "quit":
                     self.close()
+                elif kind == "mail_sent":
+                    self.store.log_activity("E-mail enviado", name, detail)
+                    self.refresh_activity()
+                elif kind == "mail_error":
+                    self.store.log_activity("Falha no e-mail", name, detail)
+                    self.refresh_activity()
         except queue.Empty:
             pass
         self.after(500, self.process_events)
@@ -428,6 +459,29 @@ class App(tk.Tk):
         ttk.Button(toast, text="Abrir quarentena", command=lambda: (toast.destroy(), self.deiconify(), self.lift())).pack(anchor="e", padx=18, pady=(0, 14))
         toast.geometry("410x175+900+650")
         toast.after(12000, lambda: toast.winfo_exists() and toast.destroy())
+
+    def send_email_alert_async(self, name: str, detail: str) -> None:
+        sender, recipient = self.store.gmail_config()
+        if sender and recipient:
+            threading.Thread(target=self.send_email_alert, args=(sender, recipient, name, detail), daemon=True).start()
+
+    def send_email_alert(self, sender: str, recipient: str, name: str, detail: str) -> None:
+        try:
+            password = keyring.get_password("GBTech Security Gmail", sender)
+            if not password:
+                raise RuntimeError("A senha de aplicativo do Gmail não está configurada")
+            message = EmailMessage()
+            message["Subject"] = f"GBTech Security: arquivo isolado — {name}"
+            message["From"] = sender
+            message["To"] = recipient
+            message.set_content(f"O GBTech Security isolou o arquivo '{name}'.\n\nMotivo: {detail}\n\nRevise o item na tela de Quarentena.")
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context(), timeout=20) as server:
+                server.login(sender, password)
+                server.send_message(message)
+            self.events.put(("mail_sent", name, f"Alerta enviado para {recipient}"))
+        except Exception as error:
+            logging.exception("Não foi possível enviar alerta por Gmail")
+            self.events.put(("mail_error", name, f"Não foi possível enviar o alerta por Gmail: {error}"))
 
     def refresh(self) -> None:
         for row in self.tree.get_children():
@@ -525,24 +579,55 @@ class App(tk.Tk):
         self.summary.configure(text=f"{deleted} item(ns) excluído(s) da quarentena.")
 
     def manage_folders(self) -> None:
+        chosen = filedialog.askdirectory(title="Escolha uma pasta para monitorar", initialdir=str(Path.home()))
+        if not chosen:
+            return
+        paths = self.store.watched_paths()
+        if chosen in paths:
+            messagebox.showinfo(APP_NAME, "Essa pasta já está sendo monitorada.")
+            return
+        paths.append(chosen)
+        self.store.set_watched_paths(paths)
+        if self.monitor:
+            self.monitor.seen.clear()
+        self.store.log_activity("Pasta adicionada", "Proteção local", f"A pasta {chosen} foi adicionada ao monitoramento")
+        self.summary.configure(text="Nova pasta adicionada ao monitoramento.")
+        self.refresh()
+
+    def configure_gmail(self) -> None:
         dialog = tk.Toplevel(self)
-        dialog.title("Pastas monitoradas")
-        dialog.geometry("520x300")
+        dialog.title("Configurar alertas por Gmail")
+        dialog.geometry("560x360")
         dialog.configure(bg="#182230")
-        tk.Label(dialog, text="Uma pasta por linha", bg="#182230", fg="white", font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=18, pady=(18, 4))
-        text = tk.Text(dialog, height=10, font=("Segoe UI", 10))
-        text.insert("1.0", "\n".join(self.store.watched_paths()))
-        text.pack(fill="both", expand=True, padx=18, pady=8)
+        sender_saved, recipient_saved = self.store.gmail_config()
+        tk.Label(dialog, text="Alertas por Gmail", bg="#182230", fg="white", font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=20, pady=(20, 4))
+        tk.Label(dialog, text="Use uma senha de aplicativo do Google. Ela não é salva no projeto nem enviada para o GBTech.", bg="#182230", fg="#d0d5dd", wraplength=500, justify="left", font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(0, 14))
+        form = ttk.Frame(dialog, style="Panel.TFrame", padding=14)
+        form.pack(fill="x", padx=20)
+        ttk.Label(form, text="Seu endereço Gmail", style="Text.TLabel").grid(row=0, column=0, sticky="w")
+        sender = ttk.Entry(form, width=42)
+        sender.insert(0, sender_saved)
+        sender.grid(row=1, column=0, sticky="ew", pady=(2, 10))
+        ttk.Label(form, text="E-mail que receberá os alertas", style="Text.TLabel").grid(row=2, column=0, sticky="w")
+        recipient = ttk.Entry(form, width=42)
+        recipient.insert(0, recipient_saved or sender_saved)
+        recipient.grid(row=3, column=0, sticky="ew", pady=(2, 10))
+        ttk.Label(form, text="Senha de aplicativo do Google", style="Text.TLabel").grid(row=4, column=0, sticky="w")
+        password = ttk.Entry(form, width=42, show="•")
+        password.grid(row=5, column=0, sticky="ew", pady=(2, 0))
+        form.columnconfigure(0, weight=1)
         def save() -> None:
-            paths = [line.strip() for line in text.get("1.0", "end").splitlines() if line.strip()]
-            self.store.set_watched_paths(paths)
-            if self.monitor:
-                self.monitor.seen.clear()
-            self.store.log_activity("Pastas atualizadas", "Proteção local", f"{len(paths)} pasta(s) configurada(s) para monitoramento")
+            sender_value, recipient_value, password_value = sender.get().strip(), recipient.get().strip(), password.get().strip()
+            if "@" not in sender_value or "@" not in recipient_value or not password_value:
+                messagebox.showinfo(APP_NAME, "Informe os dois e-mails e a senha de aplicativo do Google.")
+                return
+            keyring.set_password("GBTech Security Gmail", sender_value, password_value)
+            self.store.set_gmail_config(sender_value, recipient_value)
+            self.store.log_activity("Gmail configurado", "Alertas por e-mail", f"Alertas serão enviados para {recipient_value}")
             dialog.destroy()
-            self.summary.configure(text="Pastas monitoradas atualizadas.")
-            self.refresh()
-        ttk.Button(dialog, text="Salvar pastas", style="Accent.TButton", command=save).pack(pady=(0, 16))
+            self.refresh_activity()
+            self.summary.configure(text="Alertas por Gmail configurados. O próximo arquivo isolado enviará um aviso.")
+        ttk.Button(dialog, text="Salvar configuração", style="Accent.TButton", command=save).pack(anchor="e", padx=20, pady=16)
 
     def manage_accounts(self) -> None:
         dialog = tk.Toplevel(self)
