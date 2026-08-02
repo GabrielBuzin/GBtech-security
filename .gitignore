@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+gbtech-logo-source.png
+
+# Dados locais do aplicativo
+GBTechSecurity/
