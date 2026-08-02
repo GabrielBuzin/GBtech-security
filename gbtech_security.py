@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import ctypes
 from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
@@ -223,6 +224,8 @@ class App(tk.Tk):
         self.taskbar_icon: tk.PhotoImage | None = None
         self.tray_icon: pystray.Icon | None = None
         self.title(APP_NAME)
+        if sys.platform == "win32":
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("GBTech.Security.Desktop")
         self.geometry("1060x700")
         self.minsize(920, 600)
         self.configure(bg="#101828")
@@ -230,9 +233,12 @@ class App(tk.Tk):
         self.style.theme_use("clam")
         self._style()
         logo_path = Path(__file__).with_name("gbtech-logo.png")
+        icon_path = Path(__file__).with_name("gbtech-logo.ico")
         if logo_path.exists():
             self.taskbar_icon = tk.PhotoImage(file=str(logo_path))
             self.iconphoto(True, self.taskbar_icon)
+        if icon_path.exists():
+            self.iconbitmap(default=str(icon_path))
         self._ui()
         self.start_monitor()
         self.start_tray()
