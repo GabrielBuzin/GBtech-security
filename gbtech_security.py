@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import queue
 import shutil
@@ -28,6 +29,7 @@ APP_NAME = "GBTech Security"
 DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "GBTechSecurity"
 QUARANTINE_DIR = DATA_DIR / "quarantine"
 DB_PATH = DATA_DIR / "security.db"
+LOG_PATH = DATA_DIR / "gbtech-security.log"
 SCAN_INTERVAL_SECONDS = 8
 SUSPICIOUS_EXTENSIONS = {".exe", ".msi", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".scr", ".com", ".jar", ".hta", ".lnk", ".reg"}
 ARCHIVE_EXTENSIONS = {".zip", ".rar", ".7z", ".iso", ".img"}
@@ -50,6 +52,7 @@ class Storage:
     def __init__(self) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
+        logging.basicConfig(filename=LOG_PATH, level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
         self.connection = sqlite3.connect(DB_PATH, check_same_thread=False)
         self.connection.execute(
             """CREATE TABLE IF NOT EXISTS quarantine (
@@ -181,14 +184,19 @@ class App(tk.Tk):
         self.events: queue.Queue = queue.Queue()
         self.monitor: Monitor | None = None
         self.logo_image: tk.PhotoImage | None = None
+        self.taskbar_icon: tk.PhotoImage | None = None
         self.tray_icon: pystray.Icon | None = None
         self.title(APP_NAME)
-        self.geometry("980x640")
-        self.minsize(860, 540)
+        self.geometry("1060x700")
+        self.minsize(920, 600)
         self.configure(bg="#101828")
         self.style = ttk.Style(self)
         self.style.theme_use("clam")
         self._style()
+        logo_path = Path(__file__).with_name("gbtech-logo.png")
+        if logo_path.exists():
+            self.taskbar_icon = tk.PhotoImage(file=str(logo_path))
+            self.iconphoto(True, self.taskbar_icon)
         self._ui()
         self.start_monitor()
         self.start_tray()
@@ -200,13 +208,19 @@ class App(tk.Tk):
         self.style.configure("Main.TFrame", background="#101828")
         self.style.configure("Panel.TFrame", background="#182230")
         self.style.configure("Card.TFrame", background="#243246")
+        self.style.configure("Hero.TFrame", background="#152d34")
         self.style.configure("Title.TLabel", background="#101828", foreground="#ffffff", font=("Segoe UI", 22, "bold"))
+        self.style.configure("Subtitle.TLabel", background="#101828", foreground="#98a2b3", font=("Segoe UI", 10))
+        self.style.configure("HeroTitle.TLabel", background="#152d34", foreground="#ffffff", font=("Segoe UI", 20, "bold"))
+        self.style.configure("HeroText.TLabel", background="#152d34", foreground="#d0d5dd", font=("Segoe UI", 10))
         self.style.configure("Text.TLabel", background="#182230", foreground="#d0d5dd", font=("Segoe UI", 10))
         self.style.configure("CardTitle.TLabel", background="#243246", foreground="#ffffff", font=("Segoe UI", 12, "bold"))
         self.style.configure("CardText.TLabel", background="#243246", foreground="#d0d5dd", font=("Segoe UI", 10))
         self.style.configure("Status.TLabel", background="#182230", foreground="#6ce9a6", font=("Segoe UI", 11, "bold"))
+        self.style.configure("HeroStatus.TLabel", background="#152d34", foreground="#6ce9a6", font=("Segoe UI", 11, "bold"))
         self.style.configure("Accent.TButton", background="#16a34a", foreground="#ffffff", padding=(14, 8), font=("Segoe UI", 10, "bold"))
         self.style.map("Accent.TButton", background=[("active", "#15803d")])
+        self.style.configure("Quiet.TButton", background="#243246", foreground="#ffffff", padding=(12, 8), font=("Segoe UI", 9))
         self.style.configure("Treeview", background="#ffffff", fieldbackground="#ffffff", foreground="#101828", rowheight=30, font=("Segoe UI", 9))
         self.style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"))
 
@@ -219,16 +233,23 @@ class App(tk.Tk):
         if logo_path.exists():
             self.logo_image = tk.PhotoImage(file=str(logo_path)).subsample(3, 3)
             tk.Label(header, image=self.logo_image, bg="#101828").pack(side="left", padx=(0, 10))
-        ttk.Label(header, text="GBTech", style="Title.TLabel").pack(side="left")
-        ttk.Label(header, text=" SECURITY", style="Title.TLabel", foreground="#6ce9a6").pack(side="left")
-        ttk.Label(header, text="Proteção pessoal local", style="Text.TLabel").pack(side="right")
+        brand = ttk.Frame(header, style="Main.TFrame")
+        brand.pack(side="left")
+        ttk.Label(brand, text="GBTech", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(brand, text="Security center", style="Subtitle.TLabel").pack(anchor="w")
+        tk.Label(header, text="  PROTEÇÃO LOCAL", bg="#11332b", fg="#6ce9a6", font=("Segoe UI", 9, "bold"), padx=10, pady=5).pack(side="right", pady=8)
 
-        overview = ttk.Frame(shell, style="Panel.TFrame", padding=22)
+        overview = ttk.Frame(shell, style="Hero.TFrame", padding=24)
         overview.pack(fill="x", pady=(22, 16))
-        ttk.Label(overview, text="Proteção ativa", style="Status.TLabel").pack(anchor="w")
-        self.summary = ttk.Label(overview, text="Monitorando pastas selecionadas e isolando arquivos que exigem revisão.", style="Text.TLabel")
+        hero_left = ttk.Frame(overview, style="Hero.TFrame")
+        hero_left.pack(side="left", fill="both", expand=True)
+        ttk.Label(hero_left, text="●  PROTEÇÃO ATIVA", style="HeroStatus.TLabel").pack(anchor="w")
+        ttk.Label(hero_left, text="Seu computador está sendo monitorado", style="HeroTitle.TLabel").pack(anchor="w", pady=(8, 4))
+        self.summary = ttk.Label(hero_left, text="Pastas selecionadas são verificadas continuamente e itens suspeitos vão para quarentena.", style="HeroText.TLabel", wraplength=650)
         self.summary.pack(anchor="w", pady=(6, 14))
-        ttk.Button(overview, text="Verificar agora", style="Accent.TButton", command=self.scan_now).pack(anchor="w")
+        ttk.Button(hero_left, text="Verificar agora", style="Accent.TButton", command=self.scan_now).pack(anchor="w")
+        if self.logo_image:
+            tk.Label(overview, image=self.logo_image, bg="#152d34").pack(side="right", padx=(20, 8))
 
         cards = ttk.Frame(shell, style="Main.TFrame")
         cards.pack(fill="x", pady=(0, 16))
@@ -238,7 +259,10 @@ class App(tk.Tk):
 
         section = ttk.Frame(shell, style="Main.TFrame")
         section.pack(fill="both", expand=True)
-        ttk.Label(section, text="Quarentena", style="Title.TLabel", font=("Segoe UI", 14, "bold")).pack(anchor="w", pady=(0, 8))
+        section_header = ttk.Frame(section, style="Main.TFrame")
+        section_header.pack(fill="x", pady=(0, 8))
+        ttk.Label(section_header, text="Quarentena", style="Title.TLabel", font=("Segoe UI", 15, "bold")).pack(side="left")
+        ttk.Label(section_header, text="Itens isolados aguardando sua decisão", style="Subtitle.TLabel").pack(side="left", padx=12)
         columns = ("name", "reason", "date")
         self.tree = ttk.Treeview(section, columns=columns, show="headings", selectmode="browse")
         self.tree.heading("name", text="Arquivo")
@@ -250,11 +274,11 @@ class App(tk.Tk):
         self.tree.pack(fill="both", expand=True)
         actions = ttk.Frame(shell, style="Main.TFrame")
         actions.pack(fill="x", pady=(12, 0))
-        ttk.Button(actions, text="Restaurar selecionado", command=self.restore_selected).pack(side="left")
-        ttk.Button(actions, text="Excluir selecionado", command=self.delete_selected).pack(side="left", padx=8)
-        ttk.Button(actions, text="Gerenciar pastas", command=self.manage_folders).pack(side="right")
-        ttk.Button(actions, text="Contas", command=self.manage_accounts).pack(side="right", padx=8)
-        ttk.Button(actions, text="Minimizar", command=self.minimize_to_background).pack(side="right", padx=8)
+        ttk.Button(actions, text="Restaurar selecionado", style="Quiet.TButton", command=self.restore_selected).pack(side="left")
+        ttk.Button(actions, text="Excluir selecionado", style="Quiet.TButton", command=self.delete_selected).pack(side="left", padx=8)
+        ttk.Button(actions, text="Gerenciar pastas", style="Quiet.TButton", command=self.manage_folders).pack(side="right")
+        ttk.Button(actions, text="Contas", style="Quiet.TButton", command=self.manage_accounts).pack(side="right", padx=8)
+        ttk.Button(actions, text="Minimizar", style="Quiet.TButton", command=self.minimize_to_background).pack(side="right", padx=8)
         self.refresh()
 
     def card(self, parent: ttk.Frame, title: str, value: str, description: str, column: int) -> None:
@@ -273,14 +297,24 @@ class App(tk.Tk):
         self.monitor.start()
 
     def start_tray(self) -> None:
-        logo_path = Path(__file__).with_name("gbtech-logo.png")
-        image = Image.open(logo_path).convert("RGBA").resize((64, 64)) if logo_path.exists() else Image.new("RGBA", (64, 64), "#16a34a")
-        menu = pystray.Menu(
-            pystray.MenuItem("Abrir GBTech Security", lambda *_: self.events.put(("open", "", "")), default=True),
-            pystray.MenuItem("Encerrar monitoramento", lambda *_: self.events.put(("quit", "", ""))),
-        )
-        self.tray_icon = pystray.Icon("GBTechSecurity", "GBTech Security", image, menu)
-        threading.Thread(target=self.tray_icon.run, daemon=True).start()
+        try:
+            logo_path = Path(__file__).with_name("gbtech-logo.png")
+            image = Image.open(logo_path).convert("RGBA").resize((64, 64)) if logo_path.exists() else Image.new("RGBA", (64, 64), "#16a34a")
+            menu = pystray.Menu(
+                pystray.MenuItem("Abrir GBTech Security", lambda *_: self.events.put(("open", "", "")), default=True),
+                pystray.MenuItem("Encerrar monitoramento", lambda *_: self.events.put(("quit", "", ""))),
+            )
+            self.tray_icon = pystray.Icon("GBTechSecurity", image, "GBTech Security", menu)
+            threading.Thread(target=self.run_tray, daemon=True).start()
+        except Exception:
+            logging.exception("Não foi possível iniciar o ícone da área de notificação")
+
+    def run_tray(self) -> None:
+        try:
+            if self.tray_icon:
+                self.tray_icon.run()
+        except Exception:
+            logging.exception("O ícone da área de notificação foi encerrado")
 
     def process_events(self) -> None:
         try:
