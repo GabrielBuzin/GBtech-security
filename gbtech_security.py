@@ -69,6 +69,13 @@ class Storage:
                 provider TEXT NOT NULL, email TEXT NOT NULL, status TEXT NOT NULL
             )"""
         )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL, file_name TEXT NOT NULL,
+                details TEXT NOT NULL, happened_at TEXT NOT NULL
+            )"""
+        )
         self.connection.commit()
 
     def watched_paths(self) -> list[str]:
@@ -109,6 +116,18 @@ class Storage:
     def remove_account(self, account_id: int) -> None:
         self.connection.execute("DELETE FROM accounts WHERE id=?", (account_id,))
         self.connection.commit()
+
+    def log_activity(self, action: str, file_name: str, details: str) -> None:
+        self.connection.execute(
+            "INSERT INTO activity(action, file_name, details, happened_at) VALUES(?,?,?,?)",
+            (action, file_name, details, now()),
+        )
+        self.connection.commit()
+
+    def activity(self) -> list[tuple]:
+        return self.connection.execute(
+            "SELECT action, file_name, details, happened_at FROM activity ORDER BY id DESC LIMIT 250"
+        ).fetchall()
 
 
 class Monitor(threading.Thread):
@@ -152,6 +171,7 @@ class Monitor(threading.Thread):
             target = QUARANTINE_DIR / stored_name
             shutil.move(str(path), str(target))
             self.store.add_quarantine(stored_name, str(path), path.name, reason, digest)
+            self.store.log_activity("Arquivo isolado", path.name, reason)
             self.events.put(("quarantined", path.name, reason))
         except (OSError, PermissionError) as error:
             self.events.put(("error", path.name, f"Não foi possível isolar: {error}"))
@@ -239,8 +259,24 @@ class App(tk.Tk):
         ttk.Label(brand, text="Security center", style="Subtitle.TLabel").pack(anchor="w")
         tk.Label(header, text="  PROTEÇÃO LOCAL", bg="#11332b", fg="#6ce9a6", font=("Segoe UI", 9, "bold"), padx=10, pady=5).pack(side="right", pady=8)
 
-        overview = ttk.Frame(shell, style="Hero.TFrame", padding=24)
-        overview.pack(fill="x", pady=(22, 16))
+        self.style.configure("TNotebook", background="#101828", borderwidth=0)
+        self.style.configure("TNotebook.Tab", background="#182230", foreground="#d0d5dd", padding=(16, 9), font=("Segoe UI", 9, "bold"))
+        self.style.map("TNotebook.Tab", background=[("selected", "#16a34a")], foreground=[("selected", "#ffffff")])
+        notebook = ttk.Notebook(shell)
+        notebook.pack(fill="both", expand=True, pady=(20, 0))
+        dashboard = ttk.Frame(notebook, style="Main.TFrame", padding=(0, 18, 0, 0))
+        quarantine = ttk.Frame(notebook, style="Main.TFrame", padding=(0, 18, 0, 0))
+        activity = ttk.Frame(notebook, style="Main.TFrame", padding=(0, 18, 0, 0))
+        protection = ttk.Frame(notebook, style="Main.TFrame", padding=(0, 18, 0, 0))
+        settings = ttk.Frame(notebook, style="Main.TFrame", padding=(0, 18, 0, 0))
+        notebook.add(dashboard, text="Painel")
+        notebook.add(quarantine, text="Quarentena")
+        notebook.add(activity, text="Atividade")
+        notebook.add(protection, text="Proteção")
+        notebook.add(settings, text="Configurações")
+
+        overview = ttk.Frame(dashboard, style="Hero.TFrame", padding=24)
+        overview.pack(fill="x", pady=(0, 16))
         hero_left = ttk.Frame(overview, style="Hero.TFrame")
         hero_left.pack(side="left", fill="both", expand=True)
         ttk.Label(hero_left, text="●  PROTEÇÃO ATIVA", style="HeroStatus.TLabel").pack(anchor="w")
@@ -251,13 +287,18 @@ class App(tk.Tk):
         if self.logo_image:
             tk.Label(overview, image=self.logo_image, bg="#152d34").pack(side="right", padx=(20, 8))
 
-        cards = ttk.Frame(shell, style="Main.TFrame")
+        cards = ttk.Frame(dashboard, style="Main.TFrame")
         cards.pack(fill="x", pady=(0, 16))
         self.card(cards, "Monitoramento", "Ativo", "Pastas verificadas continuamente", 0)
         self.card(cards, "Quarentena", "0 itens", "Arquivos isolados de forma reversível", 1)
         self.card(cards, "Contas", "Local", "Integrações futuras, sem senha salva", 2)
 
-        section = ttk.Frame(shell, style="Main.TFrame")
+        quick = ttk.Frame(dashboard, style="Panel.TFrame", padding=18)
+        quick.pack(fill="x")
+        ttk.Label(quick, text="Resumo rápido", style="Text.TLabel", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(quick, text="O monitoramento continua funcionando mesmo quando a janela fica na área de notificação.", style="Text.TLabel").pack(anchor="w", pady=(6, 0))
+
+        section = ttk.Frame(quarantine, style="Main.TFrame")
         section.pack(fill="both", expand=True)
         section_header = ttk.Frame(section, style="Main.TFrame")
         section_header.pack(fill="x", pady=(0, 8))
@@ -272,13 +313,44 @@ class App(tk.Tk):
         self.tree.column("reason", width=500)
         self.tree.column("date", width=140)
         self.tree.pack(fill="both", expand=True)
-        actions = ttk.Frame(shell, style="Main.TFrame")
+        actions = ttk.Frame(quarantine, style="Main.TFrame")
         actions.pack(fill="x", pady=(12, 0))
         ttk.Button(actions, text="Restaurar selecionado", style="Quiet.TButton", command=self.restore_selected).pack(side="left")
         ttk.Button(actions, text="Excluir selecionado", style="Quiet.TButton", command=self.delete_selected).pack(side="left", padx=8)
         ttk.Button(actions, text="Gerenciar pastas", style="Quiet.TButton", command=self.manage_folders).pack(side="right")
         ttk.Button(actions, text="Contas", style="Quiet.TButton", command=self.manage_accounts).pack(side="right", padx=8)
         ttk.Button(actions, text="Minimizar", style="Quiet.TButton", command=self.minimize_to_background).pack(side="right", padx=8)
+
+        ttk.Label(activity, text="Histórico de atividade", style="Title.TLabel", font=("Segoe UI", 15, "bold")).pack(anchor="w", pady=(0, 8))
+        ttk.Label(activity, text="Registro local das decisões do GBTech Security.", style="Subtitle.TLabel").pack(anchor="w", pady=(0, 12))
+        activity_columns = ("action", "file", "details", "date")
+        self.activity_tree = ttk.Treeview(activity, columns=activity_columns, show="headings")
+        for key, label, width in (("action", "Ação", 150), ("file", "Arquivo", 190), ("details", "Detalhes", 480), ("date", "Data", 150)):
+            self.activity_tree.heading(key, text=label)
+            self.activity_tree.column(key, width=width)
+        self.activity_tree.pack(fill="both", expand=True)
+
+        ttk.Label(protection, text="Central de proteção", style="Title.TLabel", font=("Segoe UI", 15, "bold")).pack(anchor="w", pady=(0, 8))
+        ttk.Label(protection, text="Pastas monitoradas", style="Subtitle.TLabel").pack(anchor="w")
+        self.paths_list = tk.Listbox(protection, bg="#243246", fg="#ffffff", selectbackground="#16a34a", borderwidth=0, font=("Segoe UI", 10), height=9)
+        self.paths_list.pack(fill="x", pady=(8, 14))
+        protection_actions = ttk.Frame(protection, style="Main.TFrame")
+        protection_actions.pack(fill="x")
+        ttk.Button(protection_actions, text="Gerenciar pastas", style="Accent.TButton", command=self.manage_folders).pack(side="left")
+        ttk.Button(protection_actions, text="Verificar agora", style="Quiet.TButton", command=self.scan_now).pack(side="left", padx=8)
+        self.monitor_button = ttk.Button(protection_actions, text="Pausar monitoramento", style="Quiet.TButton", command=self.toggle_monitor)
+        self.monitor_button.pack(side="left")
+
+        ttk.Label(settings, text="Configurações", style="Title.TLabel", font=("Segoe UI", 15, "bold")).pack(anchor="w", pady=(0, 8))
+        preferences = ttk.Frame(settings, style="Panel.TFrame", padding=20)
+        preferences.pack(fill="x")
+        ttk.Label(preferences, text="Contas e integrações", style="Text.TLabel", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(preferences, text="Registre contas futuras sem salvar senhas ou chaves no aplicativo.", style="Text.TLabel").pack(anchor="w", pady=(5, 14))
+        ttk.Button(preferences, text="Gerenciar contas", style="Accent.TButton", command=self.manage_accounts).pack(anchor="w")
+        privacy = ttk.Frame(settings, style="Panel.TFrame", padding=20)
+        privacy.pack(fill="x", pady=14)
+        ttk.Label(privacy, text="Privacidade", style="Text.TLabel", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(privacy, text="Arquivos, hashes e registros permanecem neste computador. Consultas online só serão ativadas se você configurar um serviço externo.", style="Text.TLabel", wraplength=820).pack(anchor="w", pady=(5, 0))
         self.refresh()
 
     def card(self, parent: ttk.Frame, title: str, value: str, description: str, column: int) -> None:
@@ -362,6 +434,32 @@ class App(tk.Tk):
         for item in items:
             self.tree.insert("", "end", iid=str(item[0]), values=(item[1], item[2], item[3]))
         self.quarantine_count.configure(text=f"{len(items)} item" + ("" if len(items) == 1 else "s"))
+        self.refresh_activity()
+        self.refresh_protection()
+
+    def refresh_activity(self) -> None:
+        for row in self.activity_tree.get_children():
+            self.activity_tree.delete(row)
+        for action, file_name, details, happened_at in self.store.activity():
+            self.activity_tree.insert("", "end", values=(action, file_name, details, happened_at))
+
+    def refresh_protection(self) -> None:
+        self.paths_list.delete(0, "end")
+        for path in self.store.watched_paths():
+            self.paths_list.insert("end", path)
+        is_active = self.monitor is not None and self.monitor.running.is_set()
+        self.monitor_button.configure(text="Pausar monitoramento" if is_active else "Ativar monitoramento")
+
+    def toggle_monitor(self) -> None:
+        if self.monitor and self.monitor.running.is_set():
+            self.monitor.stop()
+            self.store.log_activity("Monitoramento pausado", "Proteção local", "A verificação contínua foi pausada pelo usuário")
+            self.summary.configure(text="Monitoramento pausado. Os arquivos existentes continuam na quarentena.")
+        else:
+            self.start_monitor()
+            self.store.log_activity("Monitoramento ativado", "Proteção local", "A verificação contínua foi retomada")
+            self.summary.configure(text="Monitoramento ativo novamente.")
+        self.refresh()
 
     def scan_now(self) -> None:
         self.summary.configure(text="A verificação usa as mesmas regras locais do monitoramento. Aguarde alguns segundos.")
@@ -388,6 +486,7 @@ class App(tk.Tk):
             original.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(source), str(original))
             self.store.remove(item[0])
+            self.store.log_activity("Arquivo restaurado", item[1], "O arquivo foi devolvido à pasta original")
             self.refresh()
             self.summary.configure(text=f"{item[1]} foi restaurado para a pasta original.")
         except OSError as error:
@@ -400,6 +499,7 @@ class App(tk.Tk):
         try:
             (QUARANTINE_DIR / item[6]).unlink(missing_ok=True)
             self.store.remove(item[0])
+            self.store.log_activity("Arquivo excluído", item[1], "O item foi excluído permanentemente da quarentena")
             self.refresh()
             self.summary.configure(text=f"{item[1]} foi excluído da quarentena.")
         except OSError as error:
@@ -419,8 +519,10 @@ class App(tk.Tk):
             self.store.set_watched_paths(paths)
             if self.monitor:
                 self.monitor.seen.clear()
+            self.store.log_activity("Pastas atualizadas", "Proteção local", f"{len(paths)} pasta(s) configurada(s) para monitoramento")
             dialog.destroy()
             self.summary.configure(text="Pastas monitoradas atualizadas.")
+            self.refresh()
         ttk.Button(dialog, text="Salvar pastas", style="Accent.TButton", command=save).pack(pady=(0, 16))
 
     def manage_accounts(self) -> None:
