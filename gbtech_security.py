@@ -20,6 +20,9 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 
+import pystray
+from PIL import Image
+
 
 APP_NAME = "GBTech Security"
 DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "GBTechSecurity"
@@ -178,6 +181,7 @@ class App(tk.Tk):
         self.events: queue.Queue = queue.Queue()
         self.monitor: Monitor | None = None
         self.logo_image: tk.PhotoImage | None = None
+        self.tray_icon: pystray.Icon | None = None
         self.title(APP_NAME)
         self.geometry("980x640")
         self.minsize(860, 540)
@@ -187,6 +191,7 @@ class App(tk.Tk):
         self._style()
         self._ui()
         self.start_monitor()
+        self.start_tray()
         self.after(500, self.process_events)
         self.protocol("WM_DELETE_WINDOW", self.minimize_to_background)
         self.bind("<Control-Shift-Q>", lambda _event: self.close())
@@ -267,6 +272,16 @@ class App(tk.Tk):
         self.monitor = Monitor(self.store, self.events)
         self.monitor.start()
 
+    def start_tray(self) -> None:
+        logo_path = Path(__file__).with_name("gbtech-logo.png")
+        image = Image.open(logo_path).convert("RGBA").resize((64, 64)) if logo_path.exists() else Image.new("RGBA", (64, 64), "#16a34a")
+        menu = pystray.Menu(
+            pystray.MenuItem("Abrir GBTech Security", lambda *_: self.events.put(("open", "", "")), default=True),
+            pystray.MenuItem("Encerrar monitoramento", lambda *_: self.events.put(("quit", "", ""))),
+        )
+        self.tray_icon = pystray.Icon("GBTechSecurity", "GBTech Security", image, menu)
+        threading.Thread(target=self.tray_icon.run, daemon=True).start()
+
     def process_events(self) -> None:
         try:
             while True:
@@ -277,6 +292,12 @@ class App(tk.Tk):
                     self.refresh()
                 elif kind == "error":
                     self.summary.configure(text=detail)
+                elif kind == "open":
+                    self.deiconify()
+                    self.lift()
+                    self.focus_force()
+                elif kind == "quit":
+                    self.close()
         except queue.Empty:
             pass
         self.after(500, self.process_events)
@@ -415,12 +436,14 @@ class App(tk.Tk):
     def close(self) -> None:
         if self.monitor:
             self.monitor.stop()
+        if self.tray_icon:
+            self.tray_icon.stop()
         self.destroy()
 
     def minimize_to_background(self) -> None:
         """Keep monitoring active while the application stays minimized on the taskbar."""
-        self.iconify()
-        self.summary.configure(text="GBTech Security continua monitorando em segundo plano. Para encerrar: Ctrl+Shift+Q.")
+        self.summary.configure(text="GBTech Security continua monitorando na área de notificação do Windows.")
+        self.withdraw()
 
 
 if __name__ == "__main__":

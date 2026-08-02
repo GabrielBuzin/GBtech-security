@@ -14,6 +14,10 @@ Protótipo pessoal para Windows com monitoramento de pastas e quarentena revers�
 
 Execute `iniciar-gbtech-security.bat` no Windows.
 
+O aplicativo fica na área de notificação do Windows (perto do relógio) ao ser minimizado. Clique com o botão direito no ícone para reabrir ou encerrar o monitoramento.
+
+Para executar em outro computador, instale as dependências uma vez com `python -m pip install -r requirements.txt`.
+
 ## Limites importantes
 
 Este é um protótipo de segurança local, não um substituto para um antivírus comercial. Ele não bloqueia ameaças no nível do sistema e não envia arquivos para serviços externos.
